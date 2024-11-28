@@ -36,7 +36,7 @@ async def process_image(file: UploadFile = File(...)):
         results = prediction.predict_all()
 
         # Merge bounding boxes from all models
-        processed_image = results['intensity'][0]  # Use intensity image as base
+        processed_image = results['intensity'][0] # Use intensity image as base
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing the image: {str(e)}")
     
