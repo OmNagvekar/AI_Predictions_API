@@ -14,7 +14,7 @@ import asyncio
 app = FastAPI()
 UPLOAD_DIR = "upload"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-CCTV_STREAM_URL = '/dev/video0'
+CCTV_STREAM_URL = '/home/chinu_tensor/Downloads/action3.mp4'
 
 executor = ThreadPoolExecutor(max_workers=2)
 
@@ -22,7 +22,7 @@ executor = ThreadPoolExecutor(max_workers=2)
 
 def process_predictions(frame):
     """Process a single frame for predictions."""
-    prediction = Predictions(file=None)
+    prediction = Predictions(file=None,stream=True)
     prediction.image = cv2.cvtColor(cv2.resize(frame, (640, 640)), cv2.COLOR_BGR2RGB)
     results = prediction.predict_all()
 
@@ -70,6 +70,7 @@ async def process_image(file: UploadFile = File(...)):
         f.write(file_content)
     
     # Initialize predictions class and process image
+    print(file_path)
     try:
         prediction = Predictions(file_path)
         results = prediction.predict_all()
@@ -113,32 +114,13 @@ async def process_video(file: UploadFile = File(...)):
     file_path = os.path.join(UPLOAD_DIR, file.filename)
     with open(file_path, "wb") as f:
         f.write(file_content)
-
+    model = Predictions(file_path,True)
     # Initialize predictions class and process video
     try:
-        prediction = PredictionsVideo(file_path)
-        processed_frames, results = prediction.process_video()
+        processed_frames ,_,_,_= model.predict_over_video()
+        write_video(file_path,processed_frames,UPLOAD_DIR,"processd") 
+        response_data = {'satus':'succeed'}
 
-        # Save processed frames as image files
-        frame_urls = []
-        for i, frame in enumerate(processed_frames):
-            # Generate a unique filename for each frame
-            frame_filename = f"{uuid.uuid4()}.jpg"
-            frame_path = os.path.join(UPLOAD_DIR, frame_filename)
-            
-            # Save the frame as an image file
-            cv2.imwrite(frame_path, frame)
-
-            # Generate URL or file path to the saved frame
-            frame_urls.append(f"/frames/{frame_filename}")
-
-        # Prepare the response with URLs to the processed frames
-        response_data = {
-            "intensity_results": results['intensity'],
-            "type_results": results['type'],
-            "litter_results": results['litter'],
-            "processed_frames": frame_urls,  # Provide URLs to the frames
-        }
         if isinstance(response_data, np.ndarray):
             response_data = response_data.tolist()
     except Exception as e:
@@ -154,45 +136,6 @@ async def get_frame(filename: str):
     if os.path.exists(frame_path):
         return FileResponse(frame_path)
     raise HTTPException(status_code=404, detail="Frame not found")
-
-@app.websocket("/ws/stream-video")
-async def stream_video(websocket: WebSocket):
-    await websocket.accept()
-    try:
-        # Replace this with actual video path or stream input
-        video_path = "path/to/your/video.mp4"  # Replace with your input video file
-        cap = cv2.VideoCapture(video_path)
-
-        if not cap.isOpened():
-            raise HTTPException(status_code=400, detail="Error opening video stream")
-
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
-
-            # Process frame with PredictionsVideo class
-            prediction = PredictionsVideo(frame)
-            results = prediction.predict_frame()  # Process a single frame and get bounding boxes
-
-            # Example bounding box results
-            bounding_boxes = results.get("boxes", [])  # Replace with your prediction output
-            frame_id = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
-
-            # Package data into JSON format
-            data = {
-                "frame_id": frame_id,
-                "boxes": bounding_boxes,  # Assuming results are [{"x1": int, "y1": int, "x2": int, "y2": int}]
-            }
-
-            # Send data via WebSocket
-            await websocket.send_json(data)
-            await asyncio.sleep(0.03)  # Simulate 30 FPS
-    except Exception as e:
-        await websocket.send_json({"error": str(e)})
-    finally:
-        cap.release()
-        await websocket.close()
 
 
 @app.websocket("/ws")
@@ -230,5 +173,31 @@ async def stream_cctv(websocket: WebSocket):
         video_capture.release()
         await websocket.close()
 
+def write_video(file_path, processed_frame_list, output_dir, file_name):
+    cap = cv2.VideoCapture(file_path)
+    
+    if not cap.isOpened():
+        print("Error: Couldn't open the video.")
+        return 
+    output_path = f'./{output_dir}/processed_{file_name}.mp4'
+    print(f"Output Path: {output_path}")
+    
+    # Get video properties
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_width = 640
+    frame_height = 640
+    
+    # Setup VideoWriter
+    output_video = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_width, frame_height))
+    
+    # Read and write processed frames
+    for frame in processed_frame_list:
+        output_video.write(cv2.cvtColor(frame,cv2.COLOR_BGR2RGB))
+    
+    # Release resources
+    cap.release()
+    output_video.release()
+    
+    print(f"Video written successfully to {output_path}")
 if __name__ == '__main__':
     uvicorn.run('API:app', host='localhost', port=8000, reload=True)

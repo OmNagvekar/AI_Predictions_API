@@ -6,18 +6,29 @@ from shapely.ops import unary_union
 
 
 class Predictions:
-    def __init__(self, file) -> None:
+    def __init__(self, file,stream:bool=False) -> None:
         self.model_intensity = YOLO('./garbage_intensity.pt')
         self.model_type = YOLO('./garbage_type_detect.pt')
         self.model_littering = YOLO('./littering2.pt')
         self.model_intensity_conf = 0.6
         self.model_type_conf = 0.4
         self.model_littering_conf = 0.6
-        self.image = None #.process_image(file)
+        self.file = file 
+        if stream:
+
+            self.image = None 
+        else:
+            self.image = self.process_image(file)
+
         print('in')
     def process_image(self, file):
         image = cv2.imread(file)
         image = cv2.resize(image, (640, 640))
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        return image
+
+    def process_frame(self, img):
+        image = cv2.resize(img, (640, 640))
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         return image
 
@@ -68,7 +79,27 @@ class Predictions:
 
         return img, results, garbage_percentage, object_percentages
 
+    
+    def predict_over_video(self):
+        cap_ = cv2.VideoCapture(self.file)
+        pred_frames = [] 
+        while cap_.isOpened():
+            ret,frame = cap_.read()
+            if not ret:
+                break
 
+            self.image = self.process_frame(frame) 
+            results = self.predict_all()
+            pred_frames.append(results['intensity'][0])
+
+             
+
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                print("Exiting...")
+                break
+        cap_.release()
+
+        return pred_frames,None,None,None
 
     def predict_all(self):
         from concurrent.futures import ThreadPoolExecutor
