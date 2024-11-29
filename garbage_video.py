@@ -78,7 +78,6 @@ class PredictionsVideo:
             frame_count += 1
             results = {}
 
-            # Process different models
             processed_frame_intensity, _, garbage_percentage, _ = self.predict_and_detect(self.model_intensity, frame, intensity=True)
             processed_frame_type, _, _, object_percentages = self.predict_and_detect(self.model_type, frame)
             processed_frame_litter, _, _, _ = self.predict_and_detect(self.model_littering, frame)
@@ -89,10 +88,6 @@ class PredictionsVideo:
             results['type'] = (processed_frame_type, object_percentages)
             results['litter'] = processed_frame_litter
 
-            # Optionally, display the processed frame
-            # cv2.imshow('Processed Video', processed_frame_intensity)
-            # if cv2.waitKey(1) & 0xFF == ord('q'):
-            #     break
 
         cap.release()
         return processed_frames, results

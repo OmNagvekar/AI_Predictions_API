@@ -7,15 +7,14 @@ from shapely.ops import unary_union
 
 class Predictions:
     def __init__(self, file) -> None:
-        ultralytics.checks()
         self.model_intensity = YOLO('./garbage_intensity.pt')
         self.model_type = YOLO('./garbage_type_detect.pt')
         self.model_littering = YOLO('./littering2.pt')
         self.model_intensity_conf = 0.6
         self.model_type_conf = 0.4
         self.model_littering_conf = 0.6
-        self.image = self.process_image(file)
-
+        self.image = None #.process_image(file)
+        print('in')
     def process_image(self, file):
         image = cv2.imread(file)
         image = cv2.resize(image, (640, 640))
