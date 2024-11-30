@@ -63,7 +63,7 @@ def process_predictions(frame):
     return response_data
 
 @app.post('/process-image')
-async def process_image(file: UploadFile = File(...)):
+async def process_image(background_tasks: BackgroundTasks,file: UploadFile = File(...)):
     """
     Endpoint to process an image uploaded by the user. 
     The image is processed for predictions, and the results are returned.
@@ -93,8 +93,9 @@ async def process_image(file: UploadFile = File(...)):
         intensity_percentages = results['intensity'][3]
         garbage_percentage = results['intensity'][2]
 
-        # Process image for Base64 encoding
+        # Process image for Base64 encoding and store the image
         processed_image = results['intensity'][0]
+        cv2.imwrite('./upload/processed_image.jpg',processed_image)
         _, buffer = cv2.imencode('.jpg', processed_image)
         processed_image_bytes = base64.b64encode(buffer).decode('utf-8')
 
@@ -104,10 +105,11 @@ async def process_image(file: UploadFile = File(...)):
             "intensity_percentages": intensity_percentages,
             "garbage_percentage": garbage_percentage,
             "processed_image": processed_image_bytes,
+            "processed_image_download_URL":"http://127.0.0.1:8000/upload/processed_image.jpg"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing the image: {str(e)}")
-    
+    background_tasks.add(cleanup_temp_files,[file_path,"./upload/processed_image.jpg"])
     return JSONResponse(content=response_data)
 
 @app.post('/process-video')
@@ -194,7 +196,7 @@ def cleanup_temp_files(paths: list):
     """
     Cleanup temporary files after some delay to ensure they are not needed.
     """
-    time.sleep(30)
+    time.sleep(600)
     try:
         for path in paths:
             if os.path.exists(path):
