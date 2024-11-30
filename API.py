@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException,WebSocket
+from fastapi import FastAPI, File, UploadFile, HTTPException, WebSocket
 from fastapi.responses import JSONResponse, FileResponse
 import uuid
 import imghdr
@@ -8,21 +8,32 @@ import cv2
 import numpy as np
 import base64
 from garbage import Predictions
+from fastapi import BackgroundTasks
 from garbage_video import PredictionsVideo
 from concurrent.futures import ThreadPoolExecutor
 import asyncio
+import time
+from collections import defaultdict
+
+# FastAPI app initialization
 app = FastAPI()
+
+# Directory for uploaded files
 UPLOAD_DIR = "upload"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+# CCTV stream URL
 CCTV_STREAM_URL = '/home/chinu_tensor/Downloads/action3.mp4'
 
+# Thread pool for concurrent frame processing
 executor = ThreadPoolExecutor(max_workers=2)
 
-
-
 def process_predictions(frame):
-    """Process a single frame for predictions."""
-    prediction = Predictions(file=None,stream=True)
+    """
+    Process a single frame for predictions. This function runs predictions on the given frame 
+    and returns prediction results including intensity, type, litter, and a processed image.
+    """
+    prediction = Predictions(file=None, stream=True)
     prediction.image = cv2.cvtColor(cv2.resize(frame, (640, 640)), cv2.COLOR_BGR2RGB)
     results = prediction.predict_all()
 
@@ -30,8 +41,8 @@ def process_predictions(frame):
     intensity_data = results['intensity']
     type_data = results['type']
     litter_data = results['litter']
-    print('this is litter',type_data[3])
-    # Ensure all outputs are JSON-serializable
+    
+    # Prepare the response data
     response_data = {
         "intensity": {
             "garbage_percentage": float(intensity_data[2]),
@@ -50,16 +61,19 @@ def process_predictions(frame):
     response_data["processed_image"] = base64.b64encode(buffer).decode('utf-8')
 
     return response_data
+
 @app.post('/process-image')
 async def process_image(file: UploadFile = File(...)):
+    """
+    Endpoint to process an image uploaded by the user. 
+    The image is processed for predictions, and the results are returned.
+    """
     # Check if uploaded file is an image
     if not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Invalid file type. Please upload an image.")
     
-    # Read file content
+    # Read and validate file content
     file_content = await file.read()
-    
-    # Validate file as an image using imghdr
     file_type = imghdr.what(None, h=file_content)
     if file_type not in ["jpeg", "png", "bmp", "tiff", "jpg"]:
         raise HTTPException(status_code=400, detail="Unsupported image type.")
@@ -69,25 +83,22 @@ async def process_image(file: UploadFile = File(...)):
     with open(file_path, "wb") as f:
         f.write(file_content)
     
-    # Initialize predictions class and process image
-    print(file_path)
     try:
+        # Initialize predictions and process the image
         prediction = Predictions(file_path)
         results = prediction.predict_all()
 
-        # Extract object percentages from both the type and intensity models
-        type_percentages = results['type'][3]  # From model_type
-        intensity_percentages = results['intensity'][3]  # From model_intensity
-        garbage_percentage = results['intensity'][2]  # Total garbage percentage
+        # Extract and prepare data for the response
+        type_percentages = results['type'][3]
+        intensity_percentages = results['intensity'][3]
+        garbage_percentage = results['intensity'][2]
 
-        # Merge bounding boxes from all models for visualization
-        processed_image = results['intensity'][0]  # Use intensity image as base
-        
-        # Encode processed image to Base64
+        # Process image for Base64 encoding
+        processed_image = results['intensity'][0]
         _, buffer = cv2.imencode('.jpg', processed_image)
         processed_image_bytes = base64.b64encode(buffer).decode('utf-8')
 
-        # Prepare the response
+        # Prepare the response data
         response_data = {
             "type_percentages": type_percentages,
             "intensity_percentages": intensity_percentages,
@@ -97,58 +108,117 @@ async def process_image(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing the image: {str(e)}")
     
-    # Return JSON response with image and data
     return JSONResponse(content=response_data)
-
 
 @app.post('/process-video')
 async def process_video(file: UploadFile = File(...)):
+    """
+    Endpoint to process a video uploaded by the user. The video is processed frame-by-frame for predictions,
+    and results are returned.
+    """
     # Check if uploaded file is a video
     if not file.content_type.startswith("video/"):
         raise HTTPException(status_code=400, detail="Invalid file type. Please upload a video.")
-
-    # Read file content
+    
+    # Read and save the video file
     file_content = await file.read()
-
-    # Save the video file temporarily
     file_path = os.path.join(UPLOAD_DIR, file.filename)
     with open(file_path, "wb") as f:
         f.write(file_content)
-    model = Predictions(file_path,True)
-    # Initialize predictions class and process video
+    
+    model = Predictions(file_path, True)
+    
     try:
-        processed_frames ,_,_,_= model.predict_over_video()
-        write_video(file_path,processed_frames,UPLOAD_DIR,"processd") 
-        response_data = {'satus':'succeed'}
+        # Process the video and get the results
+        processed_frames, results, avg_garbage_percentage, type_sum = model.predict_over_video()
+        len_frames = len(processed_frames)
+        
+        # Check if video frames were processed
+        if len_frames == 0:
+            raise HTTPException(status_code=500, detail="No frames processed in the video.")
 
-        if isinstance(response_data, np.ndarray):
-            response_data = response_data.tolist()
+        # Write processed frames to a new video file
+        write_video(file_path, processed_frames, UPLOAD_DIR, "processed")
+
+        # Initialize counters for type and litter
+        total_percentages = defaultdict(float)
+        counts = defaultdict(int)
+        
+        # Calculate average percentages for object types
+        for instance in type_sum:
+            for obj, percentage in instance.items():
+                total_percentages[obj] += percentage
+                counts[obj] += 1
+        
+        # Compute averages
+        average_percentages = {obj: total / counts[obj] for obj, total in total_percentages.items()}
+
+        # Count object frequencies
+        object_frequencies = defaultdict(int)
+        for instance in type_sum:
+            for obj in instance.keys():
+                object_frequencies[obj] += 1
+        
+        # Sort object frequencies
+        sorted_frequencies = dict(sorted(object_frequencies.items(), key=lambda x: x[1], reverse=True))
+        
+        # Prepare the response data
+        response_data = {
+            "intensity_results": results['intensity'][3],
+            "type_results": average_percentages,
+            "litter_results": results['litter'][3],
+            "frequency": sorted_frequencies,
+            "garbage_percentage": str(sum(float(value) for value in avg_garbage_percentage) / len(processed_frames) 
+                                     if len(processed_frames) > 0 else 0),
+            "processed_video_URL": f'http://127.0.0.1:8000/upload/processed_processed.mp4',
+        }
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing the video: {str(e)}")
 
-    # Return JSON response with URLs to the processed frames and data
     return JSONResponse(content=response_data)
 
-# Endpoint to serve the processed frames
-@app.get("/frames/{filename}")
-async def get_frame(filename: str):
-    frame_path = os.path.join(UPLOAD_DIR, filename)
-    if os.path.exists(frame_path):
-        return FileResponse(frame_path)
-    raise HTTPException(status_code=404, detail="Frame not found")
+@app.get("/upload/{filename}")
+async def get_processed_video(background_tasks: BackgroundTasks, filename: str):
+    """
+    Endpoint to retrieve a processed video by filename.
+    The video is sent to the client and cleanup of temporary files is scheduled.
+    """
+    video_path = os.path.join(UPLOAD_DIR, filename)
+    if os.path.exists(video_path):
+        background_tasks.add_task(cleanup_temp_files, [video_path])
+        return FileResponse(video_path, media_type="video/mp4", filename=filename)
+    raise HTTPException(status_code=404, detail="Processed video not found")
 
+def cleanup_temp_files(paths: list):
+    """
+    Cleanup temporary files after some delay to ensure they are not needed.
+    """
+    time.sleep(30)
+    try:
+        for path in paths:
+            if os.path.exists(path):
+                os.remove(path)
+                print(f"Deleted File {path} successfully")
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Error deleting the files: {str(e)}")
 
 @app.websocket("/ws")
 async def stream_cctv(websocket: WebSocket):
+    """
+    WebSocket stream for real-time CCTV video processing. Frames are processed
+    and sent to the client in real-time.
+    """
     await websocket.accept()
 
+    # Open CCTV video stream
     video_capture = cv2.VideoCapture(CCTV_STREAM_URL)
     if not video_capture.isOpened():
         await websocket.close()
         print("Unable to access CCTV stream.")
         return
 
-    frame_skip = 10
+    frame_skip = 10  # Skip frames for performance
     frame_count = 0
 
     try:
@@ -166,7 +236,7 @@ async def stream_cctv(websocket: WebSocket):
                 await websocket.send_json(response_data)
 
             frame_count += 1
-            await asyncio.sleep(0.01)  # 20 FPS
+            await asyncio.sleep(0.01)  # Delay to achieve approx. 20 FPS
     except Exception as e:
         print(f"Error in WebSocket stream: {e}")
     finally:
@@ -174,30 +244,30 @@ async def stream_cctv(websocket: WebSocket):
         await websocket.close()
 
 def write_video(file_path, processed_frame_list, output_dir, file_name):
+    """
+    Writes processed frames to a new video file.
+    """
     cap = cv2.VideoCapture(file_path)
-    
     if not cap.isOpened():
         print("Error: Couldn't open the video.")
-        return 
+        return
+
     output_path = f'./{output_dir}/processed_{file_name}.mp4'
     print(f"Output Path: {output_path}")
     
-    # Get video properties
     fps = cap.get(cv2.CAP_PROP_FPS)
     frame_width = 640
     frame_height = 640
-    
-    # Setup VideoWriter
-    output_video = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_width, frame_height))
-    
-    # Read and write processed frames
+
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
+
+    # Write each processed frame to the output video file
     for frame in processed_frame_list:
-        output_video.write(cv2.cvtColor(frame,cv2.COLOR_BGR2RGB))
-    
-    # Release resources
+        out.write(frame)
+
+    out.release()
     cap.release()
-    output_video.release()
-    
-    print(f"Video written successfully to {output_path}")
+
 if __name__ == '__main__':
     uvicorn.run('API:app', host='localhost', port=8000, reload=True)
