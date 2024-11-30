@@ -5,15 +5,14 @@ import imghdr
 import uvicorn
 import os
 import cv2
-import numpy as np
 import base64
 from garbage import Predictions
 from fastapi import BackgroundTasks
-from garbage_video import PredictionsVideo
 from concurrent.futures import ThreadPoolExecutor
 import asyncio
 import time
 from collections import defaultdict
+from deep_sort import DeepSort
 
 # FastAPI app initialization
 app = FastAPI()
@@ -21,6 +20,9 @@ app = FastAPI()
 # Directory for uploaded files
 UPLOAD_DIR = "upload"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+# Smoothing settings
+frame_window = 5  # Number of frames to track for smoothing
+frame_history = defaultdict(list)  # Stores predictions across frames for smoothing
 
 # CCTV stream URL
 CCTV_STREAM_URL = '/home/chinu_tensor/Downloads/action3.mp4'
@@ -127,7 +129,7 @@ async def process_video(file: UploadFile = File(...)):
     file_path = os.path.join(UPLOAD_DIR, file.filename)
     with open(file_path, "wb") as f:
         f.write(file_content)
-    
+    tracker = DeepSort()
     model = Predictions(file_path, True)
     
     try:
@@ -270,6 +272,69 @@ def write_video(file_path, processed_frame_list, output_dir, file_name):
 
     out.release()
     cap.release()
+def process_predictions_with_tracking(frame):
+    prediction = Predictions(file=None, stream=True)
+    prediction.image = cv2.cvtColor(cv2.resize(frame, (640, 640)), cv2.COLOR_BGR2RGB)
+    results = prediction.predict_all()
+
+    # Use tracking to maintain object identity across frames
+    result_obj_model = results['litter'][1]  # Extract bounding box, score, and class info
+    boxes= result_obj_model.boxes
+    scores= result_obj_model.probs
+    classes=result_obj_model.names
+    trackers = tracker.update(boxes, scores)  # Update tracker with current frame data
+    smoothed_results=[]
+    # Process each tracked object (littering detection)
+    for tracker in trackers:
+        track_id = tracker[0]
+        x1, y1, x2, y2 = tracker[1]  # Bounding box coordinates
+        class_id = tracker[2]
+        confidence = tracker[3]
+        if class_id == 'littering' and confidence > 0.7:
+            # Store the predicted class for smoothing
+            frame_history[track_id].append(class_id)
+            # Only keep the most recent `history_window` frames in memory
+            if len(frame_history[track_id]) > frame_window:
+                frame_history[track_id].pop(0)
+            # Majority voting to determine the final class
+            predicted_class = majority_vote(frame_history[track_id])
+            if predicted_class=="littering":
+                # Save the image of the person who committed the littering action
+                save_person_face(frame, x1, y1, x2, y2)
+            smoothed_results.append({
+                "track_id": track_id,
+                "bbox": (x1, y1, x2, y2),
+                "class": predicted_class,
+                "confidence": confidence
+            })
+
+    return smoothed_results
+
+def majority_vote(class_history):
+    """
+    Perform majority voting over the last few frames to smooth the classification.
+    """
+    vote_counts = defaultdict(int)
+    for cls in class_history:
+        vote_counts[cls] += 1
+
+    # Return the class with the highest vote count
+    return max(vote_counts, key=vote_counts.get)
+
+def save_person_face(frame, x1, y1, x2, y2):
+    # Crop the face region from the bounding box of the person
+    person_face = frame[y1:y2, x1:x2]
+    # Use a face detection model (e.g., OpenCV Haar Cascade)
+    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+    faces = face_cascade.detectMultiScale(person_face, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+
+    for (fx, fy, fw, fh) in faces:
+        face_image = person_face[fy:fy+fh, fx:fx+fw]
+        # Save face image
+        face_filename = f"face_{uuid.uuid4()}.jpg"
+        cv2.imwrite(os.path.join(UPLOAD_DIR, face_filename), face_image)
+        print(f"Saved face image as {face_filename}")
+
 
 if __name__ == '__main__':
     uvicorn.run('API:app', host='localhost', port=8000, reload=True)
