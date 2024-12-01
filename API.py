@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 import asyncio
 import time
 from collections import defaultdict
-from deep_sort import DeepSort
+from deep_sort_realtime.deepsort_tracker import DeepSort
 
 # FastAPI app initialization
 app = FastAPI()
@@ -129,7 +129,6 @@ async def process_video(file: UploadFile = File(...)):
     file_path = os.path.join(UPLOAD_DIR, file.filename)
     with open(file_path, "wb") as f:
         f.write(file_content)
-    tracker = DeepSort()
     model = Predictions(file_path, True)
     
     try:
@@ -276,13 +275,13 @@ def process_predictions_with_tracking(frame):
     prediction = Predictions(file=None, stream=True)
     prediction.image = cv2.cvtColor(cv2.resize(frame, (640, 640)), cv2.COLOR_BGR2RGB)
     results = prediction.predict_all()
-
+    tracker = DeepSort()
     # Use tracking to maintain object identity across frames
-    result_obj_model = results['litter'][1]  # Extract bounding box, score, and class info
-    boxes= result_obj_model.boxes
-    scores= result_obj_model.probs
-    classes=result_obj_model.names
-    trackers = tracker.update(boxes, scores)  # Update tracker with current frame data
+    result_obj_model = results['litter'][1]
+    # Extract bounding box, score, and class info
+    maping = result_obj_model[0].names
+    tracking_obj = [(r.xywh.to('cpu').numpy().tolist()[0],r.conf.to('cpu').item(),maping[int(r.cls.to('cpu').item())]) for r in results[0].boxes]
+    trackers = tracker.update_tracks(tracking_obj,frame)  # Update tracker with current frame data
     smoothed_results=[]
     # Process each tracked object (littering detection)
     for tracker in trackers:
