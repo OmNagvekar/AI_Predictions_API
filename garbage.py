@@ -3,6 +3,10 @@ from ultralytics import YOLO
 import cv2
 from shapely.geometry import box
 from shapely.ops import unary_union
+from deep_sort_realtime.deepsort_tracker import DeepSort
+import os
+from collections import defaultdict
+
 
 # Class to handle predictions from different YOLO models
 class Predictions:
@@ -97,6 +101,34 @@ class Predictions:
         pred_frames = []  # List to store processed frames
         type_sums = []  # List to store type sums
         average_garbage = []  # List to store average garbage percentages
+        deep_obj = DeepSort() # deepsort tracking object
+        frame_window = 5  # Number of frames to track for smoothing
+        frame_history = defaultdict(list)  # Stores predictions across frames for smoothing
+        
+        def majority_vote(class_history):
+            """
+            Perform majority voting over the last few frames to smooth the classification.
+            """
+            vote_counts = defaultdict(int)
+            for cls in class_history:
+                vote_counts[cls] += 1
+
+            # Return the class with the highest vote count
+            return max(vote_counts, key=vote_counts.get)
+
+        def save_person_face(frame, x1, y1, x2, y2,track_id):
+            # Crop the face region from the bounding box of the person
+            person_face = frame[int(y1): int(y1)+int(y2) ,int(x1):int(x1)+int(x2)]
+            # Use a face detection model (e.g., OpenCV Haar Cascade)
+            face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+            faces = face_cascade.detectMultiScale(person_face, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+
+            for (fx, fy, fw, fh) in faces:
+                face_image = person_face[int(fy):int(fy)+int(fh), int(fx):int(fx)+int(fw)]
+                # Save face image
+                face_filename = f"face_{track_id}.jpg"
+                cv2.imwrite(os.path.join('./upload', face_filename), face_image)
+                print(f"Saved face image as {face_filename}")
 
         # Read and process each frame from the video
         while cap_.isOpened():
@@ -110,7 +142,34 @@ class Predictions:
             pred_frames.append(results['intensity'][0])  # Append processed frame
             average_garbage.append(results['intensity'][2])  # Append garbage percentage
             type_sums.append(results['type'][3])  # Append type sums
-            
+            litter_result = results['litter'][1]  # loading only littering model results
+            maping = litter_result[0].names # names in detection model
+            tracking_obj = [(r.xywh.to('cpu').numpy().tolist()[0],r.conf.to('cpu').item(),maping[int(r.cls.to('cpu').item())]) for r in litter_result[0].boxes]
+            trackers = deep_obj.update_tracks(tracking_obj,frame)  # Update tracker with current frame data
+            smoothed_results=[]
+            for track_ in trackers:
+                track_id = track_.track_id # tracking id of each object in image
+                x1, y1, x2, y2 = track_.to_ltrb()  # Bounding box coordinates
+                class_id = track_.get_det_class() # class name
+                confidence = track_.get_det_conf() # confidence score
+                if class_id == 'littering' and confidence > 0.7:
+                    # Store the predicted class for smoothing
+                    frame_history[track_id].append(class_id)
+                    # Only keep the most recent `history_window` frames in memory
+                    if len(frame_history[track_id]) > frame_window:
+                        frame_history[track_id].pop(0)
+                    # Majority voting to determine the final class
+                    predicted_class = majority_vote(frame_history[track_id])
+                    if predicted_class=="littering":
+                        # Save the image of the person who committed the littering action
+                        save_person_face(frame, x1, y1, x2, y2,track_id)
+                    smoothed_results.append({
+                        "track_id": track_id,
+                        "bbox": (x1, y1, x2, y2),
+                        "class": predicted_class,
+                        "confidence": confidence
+                    })
+            deep_obj.delete_all_tracks() # clearing cache if not causes issue in overloading
             # Exit loop if 'q' is pressed
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 print("Exiting...")
@@ -120,7 +179,7 @@ class Predictions:
         cap_.release()
 
         # Return the results of predictions over the video
-        return pred_frames, results, average_garbage, type_sums
+        return pred_frames, results, average_garbage, type_sums,smoothed_results
 
     # Function to run predictions for all models concurrently
     def predict_all(self):

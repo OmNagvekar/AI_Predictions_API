@@ -13,6 +13,9 @@ import asyncio
 import time
 from collections import defaultdict
 from deep_sort_realtime.deepsort_tracker import DeepSort
+import torch
+from PIL import Image
+from transformers import AutoProcessor, AutoModelForCausalLM 
 
 # FastAPI app initialization
 app = FastAPI()
@@ -20,15 +23,51 @@ app = FastAPI()
 # Directory for uploaded files
 UPLOAD_DIR = "upload"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-# Smoothing settings
-frame_window = 5  # Number of frames to track for smoothing
-frame_history = defaultdict(list)  # Stores predictions across frames for smoothing
 
 # CCTV stream URL
 CCTV_STREAM_URL = '/home/chinu_tensor/Downloads/action3.mp4'
 
 # Thread pool for concurrent frame processing
 executor = ThreadPoolExecutor(max_workers=2)
+
+#### load florence model ########
+device = "cuda:0" if torch.cuda.is_available() else "cpu"
+torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+if device =="cuda:0":
+    desc_model = AutoModelForCausalLM.from_pretrained("microsoft/Florence-2-base", torch_dtype=torch_dtype, trust_remote_code=True, cache_dir='./').to(device)
+    desc_processor = AutoProcessor.from_pretrained("microsoft/Florence-2-base", trust_remote_code=True,cache_dir='./')
+else:
+    #workaround for unnecessary flash_attn requirement
+    from unittest.mock import patch
+    from transformers.dynamic_module_utils import get_imports
+    def fixed_get_imports(filename: str | os.PathLike) -> list[str]:
+        if not str(filename).endswith("modeling_florence2.py"):
+            return get_imports(filename)
+        imports = get_imports(filename)
+        imports.remove("flash_attn")
+        return imports
+    with patch("transformers.dynamic_module_utils.get_imports", fixed_get_imports): #workaround for unnecessary flash_attn requirement
+        desc_model = AutoModelForCausalLM.from_pretrained("microsoft/Florence-2-base",attn_implementation="sdpa" ,torch_dtype=torch_dtype, trust_remote_code=True, cache_dir='./').to(device)
+        desc_processor = AutoProcessor.from_pretrained("microsoft/Florence-2-base", attn_implementation="sdpa",trust_remote_code=True,cache_dir='./')
+
+
+def run_example(task_prompt,image, text_input=None):
+    """Visual LM to generate detailed description about image which on later can be used for to generate report or any other causes"""
+    if text_input is None:
+        prompt = task_prompt
+    else:
+        prompt = task_prompt + text_input
+    inputs = desc_processor(text=prompt, images=image, return_tensors="pt").to(device, torch_dtype)
+    generated_ids = desc_model.generate(
+      input_ids=inputs["input_ids"],
+      pixel_values=inputs["pixel_values"],
+      max_new_tokens=1024,
+      num_beams=3
+    )
+    generated_text = desc_processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
+
+    parsed_answer = desc_processor.post_process_generation(generated_text, task=task_prompt, image_size=(image.width, image.height))
+    return parsed_answer[task_prompt]
 
 def process_predictions(frame):
     """
@@ -38,6 +77,11 @@ def process_predictions(frame):
     prediction = Predictions(file=None, stream=True)
     prediction.image = cv2.cvtColor(cv2.resize(frame, (640, 640)), cv2.COLOR_BGR2RGB)
     results = prediction.predict_all()
+    deep_obj = DeepSort()
+    # Smoothing settings
+    frame_window = 5  # Number of frames to track for smoothing
+    frame_history = defaultdict(list)  # Stores predictions across frames for smoothing
+    smmoth_result= process_predictions_with_tracking(frame,results,deep_obj,frame_window,frame_history)
 
     # Extract prediction data and ensure serialization
     intensity_data = results['intensity']
@@ -86,6 +130,7 @@ async def process_image(background_tasks: BackgroundTasks,file: UploadFile = Fil
         f.write(file_content)
     
     try:
+        image = Image.open(file_path) #opened image in PIL for VisualLM model florence-2-base
         # Initialize predictions and process the image
         prediction = Predictions(file_path)
         results = prediction.predict_all()
@@ -100,6 +145,7 @@ async def process_image(background_tasks: BackgroundTasks,file: UploadFile = Fil
         cv2.imwrite('./upload/processed_image.jpg',processed_image)
         _, buffer = cv2.imencode('.jpg', processed_image)
         processed_image_bytes = base64.b64encode(buffer).decode('utf-8')
+        description = run_example(task_prompt='<MORE_DETAILED_CAPTION>',text_input='',image=image) # generated Detailed description about image
 
         # Prepare the response data
         response_data = {
@@ -107,11 +153,12 @@ async def process_image(background_tasks: BackgroundTasks,file: UploadFile = Fil
             "intensity_percentages": intensity_percentages,
             "garbage_percentage": garbage_percentage,
             "processed_image": processed_image_bytes,
+            "Image_Description":description,
             "processed_image_download_URL":"http://127.0.0.1:8000/upload/processed_image.jpg"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing the image: {str(e)}")
-    background_tasks.add(cleanup_temp_files,[file_path,"./upload/processed_image.jpg"])
+    background_tasks.add_task(cleanup_temp_files,[file_path,"./upload/processed_image.jpg"])
     return JSONResponse(content=response_data)
 
 @app.post('/process-video')
@@ -133,7 +180,7 @@ async def process_video(file: UploadFile = File(...)):
     
     try:
         # Process the video and get the results
-        processed_frames, results, avg_garbage_percentage, type_sum = model.predict_over_video()
+        processed_frames, results, avg_garbage_percentage, type_sum,smooth_results = model.predict_over_video()
         len_frames = len(processed_frames)
         
         # Check if video frames were processed
@@ -215,7 +262,7 @@ async def stream_cctv(websocket: WebSocket):
     await websocket.accept()
 
     # Open CCTV video stream
-    video_capture = cv2.VideoCapture(CCTV_STREAM_URL)
+    video_capture = cv2.VideoCapture(0)
     if not video_capture.isOpened():
         await websocket.close()
         print("Unable to access CCTV stream.")
@@ -271,24 +318,20 @@ def write_video(file_path, processed_frame_list, output_dir, file_name):
 
     out.release()
     cap.release()
-def process_predictions_with_tracking(frame):
-    prediction = Predictions(file=None, stream=True)
-    prediction.image = cv2.cvtColor(cv2.resize(frame, (640, 640)), cv2.COLOR_BGR2RGB)
-    results = prediction.predict_all()
-    tracker = DeepSort()
+def process_predictions_with_tracking(frame,results,deep_obj,frame_window,frame_history):
     # Use tracking to maintain object identity across frames
     result_obj_model = results['litter'][1]
     # Extract bounding box, score, and class info
     maping = result_obj_model[0].names
-    tracking_obj = [(r.xywh.to('cpu').numpy().tolist()[0],r.conf.to('cpu').item(),maping[int(r.cls.to('cpu').item())]) for r in results[0].boxes]
-    trackers = tracker.update_tracks(tracking_obj,frame)  # Update tracker with current frame data
+    tracking_obj = [(r.xywh.to('cpu').numpy().tolist()[0],r.conf.to('cpu').item(),maping[int(r.cls.to('cpu').item())]) for r in result_obj_model[0].boxes]
+    trackers = deep_obj.update_tracks(tracking_obj,frame)  # Update tracker with current frame data
     smoothed_results=[]
     # Process each tracked object (littering detection)
-    for tracker in trackers:
-        track_id = tracker[0]
-        x1, y1, x2, y2 = tracker[1]  # Bounding box coordinates
-        class_id = tracker[2]
-        confidence = tracker[3]
+    for track_ in trackers:
+        track_id = track_.track_id # tracking id of each object in image
+        x1, y1, x2, y2 = track_.to_ltrb()  # Bounding box coordinates
+        class_id = track_.get_det_class() # class name
+        confidence = track_.get_det_conf() # confidence score
         if class_id == 'littering' and confidence > 0.7:
             # Store the predicted class for smoothing
             frame_history[track_id].append(class_id)
@@ -299,13 +342,14 @@ def process_predictions_with_tracking(frame):
             predicted_class = majority_vote(frame_history[track_id])
             if predicted_class=="littering":
                 # Save the image of the person who committed the littering action
-                save_person_face(frame, x1, y1, x2, y2)
+                save_person_face(frame, x1, y1, x2, y2,track_id)
             smoothed_results.append({
                 "track_id": track_id,
                 "bbox": (x1, y1, x2, y2),
                 "class": predicted_class,
                 "confidence": confidence
             })
+    deep_obj.delete_all_tracks() # clearing cache if not causes issue in overloading
 
     return smoothed_results
 
@@ -320,17 +364,17 @@ def majority_vote(class_history):
     # Return the class with the highest vote count
     return max(vote_counts, key=vote_counts.get)
 
-def save_person_face(frame, x1, y1, x2, y2):
+def save_person_face(frame, x1, y1, x2, y2,track_id):
     # Crop the face region from the bounding box of the person
-    person_face = frame[y1:y2, x1:x2]
+    person_face = frame[int(y1): int(y1)+int(y2) ,int(x1):int(x1)+int(x2)]
     # Use a face detection model (e.g., OpenCV Haar Cascade)
     face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
     faces = face_cascade.detectMultiScale(person_face, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
 
     for (fx, fy, fw, fh) in faces:
-        face_image = person_face[fy:fy+fh, fx:fx+fw]
+        face_image = person_face[int(fy):int(fy)+int(fh), int(fx):int(fx)+int(fw)]
         # Save face image
-        face_filename = f"face_{uuid.uuid4()}.jpg"
+        face_filename = f"face_{track_id}.jpg"
         cv2.imwrite(os.path.join(UPLOAD_DIR, face_filename), face_image)
         print(f"Saved face image as {face_filename}")
 

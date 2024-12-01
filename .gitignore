@@ -1,2 +1,5 @@
 upload/
 __pycache__/
+models--microsoft--Florence-2-base/
+.locks/
+./tmpgcumdoin
