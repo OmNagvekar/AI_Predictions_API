@@ -15,6 +15,22 @@ import asyncio
 import time
 from collections import defaultdict
 
+
+import torch
+import pandas as pd
+from PIL import Image
+from transformers import AutoProcessor, AutoModelForCausalLM 
+from tqdm import tqdm
+
+#### load florence model ########
+
+device = "cuda:0" if torch.cuda.is_available() else "cpu"
+torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+
+desc_model = AutoModelForCausalLM.from_pretrained("microsoft/Florence-2-base", torch_dtype=torch_dtype, trust_remote_code=True, cache_dir='/home/chinu_tensor/SIH/florence_model').to(device)
+desc_processor = AutoProcessor.from_pretrained("microsoft/Florence-2-base", trust_remote_code=True,cache_dir='/home/chinu_tensor/SIH/florence_processor')
+
+
 # FastAPI app initialization
 app = FastAPI()
 
@@ -27,6 +43,29 @@ CCTV_STREAM_URL = '/home/chinu_tensor/Downloads/action3.mp4'
 
 # Thread pool for concurrent frame processing
 executor = ThreadPoolExecutor(max_workers=2)
+
+
+
+def run_example(task_prompt,image, text_input=None):
+    if text_input is None:
+        prompt = task_prompt
+    else:
+        prompt = task_prompt + text_input
+    inputs = desc_processor(text=prompt, images=image, return_tensors="pt").to(device, torch_dtype)
+    generated_ids = desc_model.generate(
+      input_ids=inputs["input_ids"],
+      pixel_values=inputs["pixel_values"],
+      max_new_tokens=1024,
+      num_beams=3
+    )
+    generated_text = desc_processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
+
+    parsed_answer = desc_processor.post_process_generation(generated_text, task=task_prompt, image_size=(image.width, image.height))
+
+
+
+
+    return parsed_answer[task_prompt]
 
 def process_predictions(frame):
     """
@@ -63,7 +102,7 @@ def process_predictions(frame):
     return response_data
 
 @app.post('/process-image')
-async def process_image(background_tasks: BackgroundTasks,file: UploadFile = File(...)):
+async def process_image(file: UploadFile = File(...)):
     """
     Endpoint to process an image uploaded by the user. 
     The image is processed for predictions, and the results are returned.
@@ -82,7 +121,9 @@ async def process_image(background_tasks: BackgroundTasks,file: UploadFile = Fil
     file_path = os.path.join(UPLOAD_DIR, file.filename)
     with open(file_path, "wb") as f:
         f.write(file_content)
-    
+    f.close() 
+    image = Image.open(file_path) 
+
     try:
         # Initialize predictions and process the image
         prediction = Predictions(file_path)
@@ -98,18 +139,19 @@ async def process_image(background_tasks: BackgroundTasks,file: UploadFile = Fil
         cv2.imwrite('./upload/processed_image.jpg',processed_image)
         _, buffer = cv2.imencode('.jpg', processed_image)
         processed_image_bytes = base64.b64encode(buffer).decode('utf-8')
-
+        description = run_example(task_prompt='<MORE_DETAILED_CAPTION>',text_input='',image=image)
         # Prepare the response data
         response_data = {
             "type_percentages": type_percentages,
             "intensity_percentages": intensity_percentages,
             "garbage_percentage": garbage_percentage,
             "processed_image": processed_image_bytes,
+            "Description":description,
             "processed_image_download_URL":"http://127.0.0.1:8000/upload/processed_image.jpg"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing the image: {str(e)}")
-    background_tasks.add(cleanup_temp_files,[file_path,"./upload/processed_image.jpg"])
+    # background_tasks.add_task(cleanup_temp_files,[file_path,"./upload/processed_image.jpg"])
     return JSONResponse(content=response_data)
 
 @app.post('/process-video')
@@ -244,6 +286,7 @@ async def stream_cctv(websocket: WebSocket):
     finally:
         video_capture.release()
         await websocket.close()
+
 
 def write_video(file_path, processed_frame_list, output_dir, file_name):
     """
