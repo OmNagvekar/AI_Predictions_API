@@ -120,6 +120,7 @@ This FastAPI project provides endpoints for analyzing images and videos to predi
 ├── garbage_intensity.pt   # Detects and quantifies the garbage percentage in an image or frame.
 ├── garbage_type_detect.pt # Identifies and classifies different types of garbage.
 ├── littering2.pt          # Tracks and identifies instances of littering.
+├── LICENSE                # LICENSE of the project Code.
 └── README.md              # Project documentation
 ```
 
