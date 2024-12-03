@@ -1,13 +1,12 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException, WebSocket
 from fastapi.responses import JSONResponse, FileResponse
-import uuid
 import imghdr
 import uvicorn
 import os
 import cv2
 import base64
 from garbage import Predictions
-from fastapi import BackgroundTasks
+from fastapi import BackgroundTasks, Path
 from concurrent.futures import ThreadPoolExecutor
 import asyncio
 import time
@@ -15,7 +14,8 @@ from collections import defaultdict
 from deep_sort_realtime.deepsort_tracker import DeepSort
 import torch
 from PIL import Image
-from transformers import AutoProcessor, AutoModelForCausalLM 
+from werkzeug.utils import secure_filename
+from transformers import AutoProcessor, AutoModelForCausalLM
 
 # FastAPI app initialization
 app = FastAPI()
@@ -228,16 +228,33 @@ async def process_video(file: UploadFile = File(...)):
 
     return JSONResponse(content=response_data)
 
+def is_safe_path(base_path: str, path: str) -> bool:
+    """
+    Check if the given path is within the base directory.
+    Prevents directory traversal attacks.
+    """
+    abs_base = os.path.abspath(base_path)
+    abs_path = os.path.abspath(os.path.join(base_path, path))
+    return abs_path.startswith(abs_base)
+
 @app.get("/upload/{filename}")
-async def get_processed_video(background_tasks: BackgroundTasks, filename: str):
+async def get_processed_video(background_tasks: BackgroundTasks, filename: str = Path(...,title="The name of the video file to retrieve")):
     """
     Endpoint to retrieve a processed video by filename.
     The video is sent to the client and cleanup of temporary files is scheduled.
     """
-    video_path = os.path.join(UPLOAD_DIR, filename)
+    # Sanitize the filename
+    sanitized_filename = secure_filename(filename)
+    video_path = os.path.join(UPLOAD_DIR, sanitized_filename)
+
+    # Validate path safety
+    if not is_safe_path(UPLOAD_DIR, sanitized_filename):
+        raise HTTPException(status_code=400, detail="Invalid file path.")
+
     if os.path.exists(video_path):
         background_tasks.add_task(cleanup_temp_files, [video_path])
-        return FileResponse(video_path, media_type="video/mp4", filename=filename)
+        return FileResponse(video_path, media_type="video/mp4", filename=sanitized_filename)
+    
     raise HTTPException(status_code=404, detail="Processed video not found")
 
 def cleanup_temp_files(paths: list):
@@ -262,13 +279,13 @@ async def stream_cctv(websocket: WebSocket):
     await websocket.accept()
 
     # Open CCTV video stream
-    video_capture = cv2.VideoCapture(0)
+    video_capture = cv2.VideoCapture(CCTV_STREAM_URL) #add 0 here if you want to use webcam
     if not video_capture.isOpened():
         await websocket.close()
         print("Unable to access CCTV stream.")
         return
 
-    frame_skip = 10  # Skip frames for performance
+    frame_skip = 2 # Skip frames for performance
     frame_count = 0
 
     try:
@@ -366,13 +383,14 @@ def majority_vote(class_history):
 
 def save_person_face(frame, x1, y1, x2, y2,track_id):
     # Crop the face region from the bounding box of the person
-    person_face = frame[int(y1): int(y1)+int(y2) ,int(x1):int(x1)+int(x2)]
+    # person_face = frame[int(y1): int(y1)+int(y2) ,int(x1):int(x1)+int(x2)]
     # Use a face detection model (e.g., OpenCV Haar Cascade)
+    print("save_person_face function has runned")
     face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-    faces = face_cascade.detectMultiScale(person_face, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+    faces = face_cascade.detectMultiScale(frame, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
 
     for (fx, fy, fw, fh) in faces:
-        face_image = person_face[int(fy):int(fy)+int(fh), int(fx):int(fx)+int(fw)]
+        face_image = frame[int(fy):int(fy)+int(fh), int(fx):int(fx)+int(fw)]
         # Save face image
         face_filename = f"face_{track_id}.jpg"
         cv2.imwrite(os.path.join(UPLOAD_DIR, face_filename), face_image)
@@ -380,4 +398,5 @@ def save_person_face(frame, x1, y1, x2, y2,track_id):
 
 
 if __name__ == '__main__':
-    uvicorn.run('API:app', host='localhost', port=8000, reload=True)
+    uvicorn.run('API:app', host='localhost', port=8000,reload=True,workers=2) #add workers=int_value which is equal to or less than your cpu cores, which is used run and serve mutiple users at same time on server.
+    # and remove reload=True if want to use workers because it ignores the "workers" parameter then.

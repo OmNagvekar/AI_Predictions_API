@@ -19,7 +19,7 @@ class Predictions:
         # Confidence thresholds for different models
         self.model_intensity_conf = 0.6
         self.model_type_conf = 0.4
-        self.model_littering_conf = 0.7
+        self.model_littering_conf = 0.65
         
         # Set the input file (image/video)
         self.file = file 
@@ -34,13 +34,13 @@ class Predictions:
     def process_image(self, file):
         image = cv2.imread(file)
         image = cv2.resize(image, (640, 640))  # Resize to 640x640 for model input
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # Convert to RGB for model processing
+        # image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # Convert to RGB for model processing
         return image
 
     # Function to process individual frames during video prediction
     def process_frame(self, img):
         image = cv2.resize(img, (640, 640))  # Resize the frame
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # Convert to RGB format
+        # image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # Convert to RGB format
         return image
 
     # Function to run predictions using a chosen model
@@ -118,13 +118,13 @@ class Predictions:
 
         def save_person_face(frame, x1, y1, x2, y2,track_id):
             # Crop the face region from the bounding box of the person
-            person_face = frame[int(y1): int(y1)+int(y2) ,int(x1):int(x1)+int(x2)]
+            # person_face = frame[int(y1): int(y1)+int(y2) ,int(x1):int(x1)+int(x2)]
             # Use a face detection model (e.g., OpenCV Haar Cascade)
             face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-            faces = face_cascade.detectMultiScale(person_face, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-
+            faces = face_cascade.detectMultiScale(frame, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+            print("save_person_face function has runned")
             for (fx, fy, fw, fh) in faces:
-                face_image = person_face[int(fy):int(fy)+int(fh), int(fx):int(fx)+int(fw)]
+                face_image = frame[int(fy):int(fy)+int(fh), int(fx):int(fx)+int(fw)]
                 # Save face image
                 face_filename = f"face_{track_id}.jpg"
                 cv2.imwrite(os.path.join('./upload', face_filename), face_image)
