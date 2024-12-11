@@ -16,9 +16,24 @@ import torch
 from PIL import Image
 from werkzeug.utils import secure_filename
 from transformers import AutoProcessor, AutoModelForCausalLM
+from fastapi.middleware.cors import CORSMiddleware
+
 
 # FastAPI app initialization
 app = FastAPI()
+
+origins = [
+    "*",  # Frontend
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,  # Allow requests from this origin
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all HTTP methods
+    allow_headers=["*"],  # Allow all headers
+)
+
 
 # Directory for uploaded files
 UPLOAD_DIR = "upload"
@@ -34,8 +49,8 @@ executor = ThreadPoolExecutor(max_workers=2)
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
 torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 if device =="cuda:0":
-    desc_model = AutoModelForCausalLM.from_pretrained("microsoft/Florence-2-base", torch_dtype=torch_dtype, trust_remote_code=True, cache_dir='./').to(device)
-    desc_processor = AutoProcessor.from_pretrained("microsoft/Florence-2-base", trust_remote_code=True,cache_dir='./')
+    desc_model = AutoModelForCausalLM.from_pretrained("microsoft/Florence-2-base", torch_dtype=torch_dtype, trust_remote_code=True, cache_dir='/home/chinu_tensor/SIH/florence_model').to(device)
+    desc_processor = AutoProcessor.from_pretrained("microsoft/Florence-2-base", trust_remote_code=True,cache_dir='/home/chinu_tensor/SIH/florence_processor')
 else:
     #workaround for unnecessary flash_attn requirement
     from unittest.mock import patch
