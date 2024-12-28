@@ -1,12 +1,16 @@
 # FastAPI Garbage Prediction API
 
-This FastAPI project provides endpoints for analyzing images and videos to predict garbage intensity, types, and other characteristics using advanced deep learning models like Florence-2-base and DeepSort tracker.
+- This FastAPI project provides endpoints for analyzing images and videos to predict garbage intensity, types, and other characteristics using advanced deep learning models like Florence-2-base and DeepSort tracker.
+- Showcased in the Smart India Hackathon (SIH) 2024 Grand Finale.
 
 ## Features
 
 - Upload images to predict garbage-related characteristics and generate detailed image descriptions.
 - Upload videos to process frame-by-frame predictions and analyze garbage patterns.
 - Utilizes advanced machine learning models for robust predictions.
+- offers real-time analysis of images and videos for garbage intensity, type classification, and littering detection.
+- Provides JSON responses and processed images with bounding boxes, enabling easy integration into monitoring dashboards.
+- Generates actionable insights such as garbage percentage, type, and frequency, utilizing ollama phi:3mini and Florence-2 to recommend green practices and sustainable solutions.
 - Multi-Model Garbage Detection
   - Garbage Intensity Detection: Estimates the percentage of garbage in an  area
   * Garbage Type Classification: Categorizes different types of garbage.
