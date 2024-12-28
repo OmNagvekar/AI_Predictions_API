@@ -4,3 +4,4 @@ models--microsoft--Florence-2-base/
 .locks/
 ./tmpgcumdoin
 *.bak
+chatbot/data/

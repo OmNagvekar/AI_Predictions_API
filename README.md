@@ -120,6 +120,7 @@ This FastAPI project provides endpoints for analyzing images and videos to predi
 ├── garbage_intensity.pt   # Detects and quantifies the garbage percentage in an image or frame.
 ├── garbage_type_detect.pt # Identifies and classifies different types of garbage.
 ├── littering2.pt          # Tracks and identifies instances of littering.
+├── chatbot                # Directory contains code and documents for RAG chatbot
 └── README.md              # Project documentation
 ```
 
@@ -176,4 +177,4 @@ For any questions or suggestions, feel free to contact on below Contact details:
 - Chinmay Bhosale : chinmayhbhosale02@gmail.com
 - GitHub Profile:
    - Om Nagvekar: https://github.com/OmNagvekar
-   - Chinmay Bhosale: http://github.com/chinu0609
+   - Chinmay Bhosale: https://github.com/chinu0609

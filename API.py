@@ -17,11 +17,29 @@ from PIL import Image
 from werkzeug.utils import secure_filename
 from transformers import AutoProcessor, AutoModelForCausalLM
 from fastapi.middleware.cors import CORSMiddleware
-
-
+import ollama
 # FastAPI app initialization
+
+# for ollama code
+from langchain_ollama import OllamaLLM
+from langchain.prompts import PromptTemplate
+import rich
+from langchain.chains.llm import LLMChain
+
+#prompt for suggesting green practices
+prompt = PromptTemplate(
+        input_variable = ['message'],
+        template = 'based on the description of the image suggest only one green practice that should be followed:{message}'
+
+    )
+
+# LLM to generate green practice
+llm = OllamaLLM(model='phi',device='cpu',max_tokens = 256,temperature = 0.5)
+chain = LLMChain(llm=llm,prompt=prompt)
+
 app = FastAPI()
 
+# backend middleware
 origins = [
     "*",  # Frontend
 ]
@@ -51,6 +69,7 @@ torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 if device =="cuda:0":
     desc_model = AutoModelForCausalLM.from_pretrained("microsoft/Florence-2-base", torch_dtype=torch_dtype, trust_remote_code=True, cache_dir='/home/chinu_tensor/SIH/florence_model').to(device)
     desc_processor = AutoProcessor.from_pretrained("microsoft/Florence-2-base", trust_remote_code=True,cache_dir='/home/chinu_tensor/SIH/florence_processor')
+
 else:
     #workaround for unnecessary flash_attn requirement
     from unittest.mock import patch
@@ -83,6 +102,7 @@ def run_example(task_prompt,image, text_input=None):
 
     parsed_answer = desc_processor.post_process_generation(generated_text, task=task_prompt, image_size=(image.width, image.height))
     return parsed_answer[task_prompt]
+
 
 def process_predictions(frame):
     """
@@ -145,6 +165,10 @@ async def process_image(background_tasks: BackgroundTasks,file: UploadFile = Fil
         f.write(file_content)
     
     try:
+        
+
+        torch.cuda.empty_cache() 
+
         image = Image.open(file_path) #opened image in PIL for VisualLM model florence-2-base
         # Initialize predictions and process the image
         prediction = Predictions(file_path)
@@ -161,14 +185,15 @@ async def process_image(background_tasks: BackgroundTasks,file: UploadFile = Fil
         _, buffer = cv2.imencode('.jpg', processed_image)
         processed_image_bytes = base64.b64encode(buffer).decode('utf-8')
         description = run_example(task_prompt='<MORE_DETAILED_CAPTION>',text_input='',image=image) # generated Detailed description about image
-
+         
+        d = chain.run(message=description) 
         # Prepare the response data
         response_data = {
             "type_percentages": type_percentages,
             "intensity_percentages": intensity_percentages,
             "garbage_percentage": garbage_percentage,
             "processed_image": processed_image_bytes,
-            "Image_Description":description,
+            "Image_Description":d,
             "processed_image_download_URL":"http://127.0.0.1:8000/upload/processed_image.jpg"
         }
     except Exception as e:
@@ -413,5 +438,5 @@ def save_person_face(frame, x1, y1, x2, y2,track_id):
 
 
 if __name__ == '__main__':
-    uvicorn.run('API:app', host='localhost', port=8000,reload=True,workers=2) #add workers=int_value which is equal to or less than your cpu cores, which is used run and serve mutiple users at same time on server.
+    uvicorn.run('API:app', host='localhost', port=8000,reload=True,workers=1) #add workers=int_value which is equal to or less than your cpu cores, which is used run and serve mutiple users at same time on server.
     # and remove reload=True if want to use workers because it ignores the "workers" parameter then.

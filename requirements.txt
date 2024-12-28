@@ -72,3 +72,11 @@ ultralytics-thop==2.0.12
 urllib3==2.2.3
 uvicorn==0.32.1
 werkzeug==3.0.0
+ollama==0.3.3
+langchain==0.3.12
+langchain-ollama==0.2.2
+gradio==4.43.0       
+llama_index==0.10.51
+llama-index-core==0.10.51
+llama-index-llms-ollama==0.1.5
+rich==13.0.1
